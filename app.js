@@ -88,7 +88,7 @@ function init() {
   $('#btn-load-example').addEventListener('click', loadExample);
   $('#btn-back').addEventListener('click', goBack);
   $('#btn-export').addEventListener('click', showExport);
-  $('#btn-close-modal').addEventListener('click', () => exportModal.hidden = true);
+  $('#btn-close-modal').addEventListener('click', () => exportModal.classList.remove('visible'));
   $('#btn-copy').addEventListener('click', copyJSON);
   $('#btn-download').addEventListener('click', downloadJSON);
   $('#btn-zoom-in').addEventListener('click', () => setZoom(zoomLevel + 25));
@@ -102,12 +102,12 @@ function init() {
 
   // Close modal on overlay click
   exportModal.addEventListener('click', e => {
-    if (e.target === exportModal) exportModal.hidden = true;
+    if (e.target === exportModal) exportModal.classList.remove('visible');
   });
 
   // Keyboard: Escape closes modal
   document.addEventListener('keydown', e => {
-    if (e.key === 'Escape' && !exportModal.hidden) exportModal.hidden = true;
+    if (e.key === 'Escape' && exportModal.classList.contains('visible')) exportModal.classList.remove('visible');
   });
 
   // Auto-activate first tab panel on mobile
@@ -887,8 +887,18 @@ function setZoom(level) {
 // ===== Export =====
 function showExport() {
   if (!jsonData) return;
-  jsonOutput.value = JSON.stringify(jsonData, null, 2);
-  exportModal.hidden = false;
+  try {
+    const output = JSON.stringify(jsonData, null, 2);
+    exportModal.classList.add('visible');
+    // Set value after modal is visible so textarea can render
+    requestAnimationFrame(() => {
+      jsonOutput.value = output;
+      jsonOutput.scrollTop = 0;
+    });
+  } catch (e) {
+    exportModal.classList.add('visible');
+    jsonOutput.value = '// Error serializing JSON: ' + e.message;
+  }
 }
 
 function copyJSON() {
