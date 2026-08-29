@@ -637,6 +637,10 @@ body {
 }
 
 .preview-el { cursor: grab; touch-action: none; }
+
+/* Контейнер во весь экран мышь не ловит: иначе он забирает каждый промах и вместо строки
+   уезжает вся вёрстка. Выбирается из дерева. */
+.preview-el.passthrough { pointer-events: none; }
 .preview-el:active { cursor: grabbing; }
 
 /* Ушедшее за край не прячется и не подрезается: ровно это и надо увидеть. */
