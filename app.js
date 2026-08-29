@@ -110,8 +110,47 @@ function init() {
     if (e.key === 'Escape' && exportModal.classList.contains('visible')) exportModal.classList.remove('visible');
   });
 
+  // Preview toolbar
+  const deviceSel = $('#device-select');
+  if (deviceSel) deviceSel.addEventListener('change', () => { device = deviceSel.value; renderPreview(); });
+  const sample = $('#sample-text');
+  if (sample) sample.addEventListener('input', () => { sampleText = sample.value; renderPreview(); });
+  bindToggle('#opt-hud', v => { showHud = v; });
+  bindToggle('#opt-grid', v => { showGrid = v; });
+  bindToggle('#opt-labels', v => { showLabels = v; });
+
+  // Dragging boxes straight on the preview
+  window.addEventListener('pointermove', moveDrag);
+  window.addEventListener('pointerup', endDrag);
+  window.addEventListener('pointercancel', endDrag);
+  window.addEventListener('resize', () => { if (!editorSection.hidden) renderPreview(); });
+
+  // Keyboard: arrows nudge the selection, Ctrl+Z / Ctrl+Shift+Z walk the history
+  document.addEventListener('keydown', e => {
+    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+    if (typing) return;
+    const step = e.shiftKey ? nudgeStep * 10 : nudgeStep;
+    if (e.key === 'ArrowLeft')  { e.preventDefault(); nudgeSelected(-step, 0); }
+    if (e.key === 'ArrowRight') { e.preventDefault(); nudgeSelected(step, 0); }
+    if (e.key === 'ArrowUp')    { e.preventDefault(); nudgeSelected(0, -step); }
+    if (e.key === 'ArrowDown')  { e.preventDefault(); nudgeSelected(0, step); }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+      e.preventDefault();
+      restoreHistory(e.shiftKey ? 1 : -1);
+    }
+  });
+
+  // Bring back whatever was open last time: a lost draft costs more than a stale one.
+  if (loadDraft()) showToast('Restored your last draft');
+
   // Auto-activate first tab panel on mobile
   switchTab('tree');
+}
+
+function bindToggle(sel, apply) {
+  const box = $(sel);
+  if (!box) return;
+  box.addEventListener('change', () => { apply(box.checked); renderPreview(); });
 }
 
 // ===== Tab switching =====
@@ -139,6 +178,10 @@ function parseJSON() {
   editorSection.hidden = false;
   renderTree();
   renderPreview();
+  uiHistory = [];
+  histIndex = -1;
+  pushHistory();
+  saveDraft();
 }
 
 function showError(msg) {
@@ -378,10 +421,9 @@ function selectElement(path, obj, name, type) {
   const treeNode = document.querySelector(`.tree-node[data-path="${CSS.escape(path)}"] > .tree-label`);
   if (treeNode) treeNode.classList.add('selected');
 
-  // Update preview
-  document.querySelectorAll('.preview-el.active').forEach(p => p.classList.remove('active'));
-  const prevEl = document.querySelector(`.preview-el[data-path="${CSS.escape(path)}"]`);
-  if (prevEl) prevEl.classList.add('active');
+  // Redraw the preview so the selection is highlighted and the status line below it shows
+  // this element's box: distance to every screen edge is what you are actually after.
+  renderPreview();
 
   propsTitle.textContent = name;
   renderProps(obj, name, type);
@@ -800,88 +842,459 @@ function createArrayInput(prop, arr, obj) {
 }
 
 // ===== Preview =====
+// ===== Visual preview =====
+//
+// The preview works in Bedrock UI pixels, not CSS pixels: every JSON UI number is a UI
+// pixel, so a box drawn in "whatever the panel is wide" told you nothing about where the
+// element actually lands in game. The stage is a fixed UI-pixel screen scaled to fit.
+const UI_SCREENS = {
+  desktop: { w: 427, h: 240, label: 'Desktop 16:9' },
+  phone:   { w: 520, h: 240, label: 'Phone 19.5:9' },
+  tablet:  { w: 320, h: 240, label: 'Tablet 4:3' }
+};
+
+let device = 'desktop';
+let sampleText = '\u{1F5D1} Очистка: 4:12';
+let showHud = true, showGrid = true, showLabels = true;
+let uiScale = 1;
+let dragState = null;
+
+// Undo stack. Named apart from window.history on purpose: assigning to that one throws.
+let uiHistory = [];
+let histIndex = -1;
+
+// Vanilla HUD landmarks, in UI pixels from their own corner. Handy when you are lining an
+// element up against something the client draws itself.
+const HUD_GUIDES = [
+  { id: 'hotbar',  w: 182, h: 22, ax: 0.5, ay: 1,   ox: 0,   oy: -2,  text: 'hotbar' },
+  { id: 'health',  w: 81,  h: 9,  ax: 0.5, ay: 1,   ox: -50, oy: -25, text: 'health' },
+  { id: 'hunger',  w: 81,  h: 9,  ax: 0.5, ay: 1,   ox: 50,  oy: -25, text: 'hunger' },
+  { id: 'logo',    w: 27,  h: 27, ax: 1,   ay: 1,   ox: -4,  oy: 0,   text: 'client logo' },
+  { id: 'chat',    w: 200, h: 60, ax: 0,   ay: 1,   ox: 2,   oy: -30, text: 'chat' },
+  { id: 'board',   w: 96,  h: 90, ax: 1,   ay: 0.5, ox: -1,  oy: 0,   text: 'sidebar' }
+];
+
+// ===== Text metrics =====
+// Minecraft draws most glyphs 6 UI pixels wide; private-use glyphs from a pack font are
+// square and take the full line. Close enough to tell "fits" from "runs off the screen".
+function measureUiText(str) {
+  let w = 0;
+  for (const ch of String(str)) {
+    const code = ch.codePointAt(0);
+    if (ch === ' ') w += 4;
+    else if (code >= 0xE000 && code <= 0xF8FF) w += 9;   // pack glyph
+    else if (code > 0xFFFF) w += 10;                     // emoji
+    else if (/[a-z0-9]/i.test(ch)) w += 6;
+    else w += 6;
+  }
+  return w;
+}
+
+function labelText(obj) {
+  const raw = obj.text;
+  if (typeof raw !== 'string') return sampleText;
+  // "#text" and friends are bound at runtime — show the sample instead of the binding name.
+  if (raw.startsWith('#') || raw.startsWith('$')) return sampleText;
+  return raw;
+}
+
+// ===== Resolving references =====
+// A control named "thing@namespace.other" inherits everything from "other". A stack panel
+// with a factory renders one entry per collection item. Both are drawn here, because both
+// are exactly where a layout goes wrong.
+function lookupElement(ref) {
+  if (!jsonData || typeof ref !== 'string') return null;
+  const name = ref.includes('.') ? ref.slice(ref.lastIndexOf('.') + 1) : ref;
+  const direct = jsonData[name];
+  if (direct && typeof direct === 'object') return direct;
+  for (const [key, val] of Object.entries(jsonData)) {
+    if (key === 'namespace' || !val || typeof val !== 'object') continue;
+    if (key.split('@')[0] === name) return val;
+  }
+  return null;
+}
+
+function resolved(name, obj) {
+  if (!name.includes('@')) return obj;
+  const base = lookupElement(name.split('@')[1]);
+  if (!base) return obj;
+  const merged = Object.assign({}, base, obj);
+  if (!obj.controls && base.controls) merged.controls = base.controls;
+  return merged;
+}
+
+// ===== Measurement =====
+function sizeOf(obj, parentW, parentH) {
+  const size = obj.size || ['default', 'default'];
+  return {
+    w: axisSize(size[0], parentW, obj, 'w'),
+    h: axisSize(size[1], parentH, obj, 'h')
+  };
+}
+
+function axisSize(v, parentDim, obj, axis) {
+  if (typeof v === 'number') return v;
+  const s = String(v).trim();
+
+  // "100%c" / "100%cm" / "wrap_content" — driven by the content, so measure the content.
+  if (s === 'wrap_content' || s === 'default' || /%c/.test(s)) {
+    const frac = /%c/.test(s) ? (parseFloat(s) || 100) / 100 : 1;
+    return contentSize(obj, axis) * frac;
+  }
+
+  // "100%sm" — sibling driven; we have no siblings here, fall back to the parent.
+  if (/%s/.test(s)) return parentDim * ((parseFloat(s) || 100) / 100);
+
+  // "100% - 4px" and plain percentages.
+  const pct = s.match(/(-?[\d.]+)\s*%/);
+  const px = s.match(/([+-]\s*[\d.]+)\s*px/);
+  if (pct) {
+    let out = parentDim * (parseFloat(pct[1]) / 100);
+    if (px) out += parseFloat(px[1].replace(/\s+/g, ''));
+    return out;
+  }
+  const n = parseFloat(s);
+  return isNaN(n) ? 20 : n;
+}
+
+function contentSize(obj, axis) {
+  if (obj.type === 'label') {
+    return axis === 'w' ? measureUiText(labelText(obj)) : 10;
+  }
+  const kids = childEntries(obj);
+  if (!kids.length) return axis === 'w' ? 20 : 10;
+  let max = 0;
+  for (const kid of kids) {
+    const s = sizeOf(kid.obj, 0, 0);
+    max = Math.max(max, axis === 'w' ? s.w : s.h);
+  }
+  return max;
+}
+
+function childEntries(obj) {
+  const out = [];
+  if (Array.isArray(obj.controls)) {
+    obj.controls.forEach((ctrl, i) => {
+      if (!ctrl || typeof ctrl !== 'object') return;
+      for (const [name, val] of Object.entries(ctrl)) {
+        if (!val || typeof val !== 'object') continue;
+        out.push({ index: i, name, obj: resolved(name, val), raw: val });
+      }
+    });
+  }
+  return out;
+}
+
+// ===== Layout =====
+// Boxes are laid out against their PARENT, not against the screen. The old preview measured
+// every element from the screen corner, which is precisely the mistake that hides a child
+// spilling out of its own panel.
+function layoutBoxes() {
+  const screen = UI_SCREENS[device];
+  const boxes = [];
+  if (!jsonData) return boxes;
+
+  // Templates that something else renders — a factory entry, an "@" reference — are drawn
+  // inside their owner. Drawing them a second time as a root fills the screen with boxes
+  // the player never sees there.
+  const referenced = collectReferenced();
+  const roots = Object.entries(jsonData).filter(
+    ([k, v]) =>
+      k !== 'namespace' && v && typeof v === 'object' && !Array.isArray(v) &&
+      (v.type || v.controls) && !referenced.has(k.split('@')[0])
+  );
+
+  for (const [name, obj] of roots) {
+    place(name, resolved(name, obj), { x: 0, y: 0, w: screen.w, h: screen.h }, name, 0, boxes, 0);
+  }
+  return boxes;
+}
+
+function collectReferenced() {
+  const names = new Set();
+  const walk = node => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) { node.forEach(walk); return; }
+    if (node.factory && typeof node.factory.control_name === 'string') {
+      const cn = node.factory.control_name;
+      names.add(cn.includes('.') ? cn.slice(cn.lastIndexOf('.') + 1) : cn);
+    }
+    for (const [key, val] of Object.entries(node)) {
+      if (key.includes('@')) {
+        const ref = key.split('@')[1] || '';
+        names.add(ref.includes('.') ? ref.slice(ref.lastIndexOf('.') + 1) : ref);
+      }
+      walk(val);
+    }
+  };
+  walk(jsonData);
+  return names;
+}
+
+function place(name, obj, parentBox, path, depth, boxes, stackShift) {
+  if (!obj || obj.type === 'screen') return;
+
+  const { w, h } = sizeOf(obj, parentBox.w, parentBox.h);
+
+  const from = obj.anchor_from || 'center';
+  const to = obj.anchor_to || from;
+  const ax = from.includes('left') ? 0 : from.includes('right') ? 1 : 0.5;
+  const ay = from.includes('top') ? 0 : from.includes('bottom') ? 1 : 0.5;
+  const bx = to.includes('left') ? 0 : to.includes('right') ? 1 : 0.5;
+  const by = to.includes('top') ? 0 : to.includes('bottom') ? 1 : 0.5;
+
+  const off = obj.offset || [0, 0];
+  const ox = numOf(off[0], parentBox.w);
+  const oy = numOf(off[1], parentBox.h);
+
+  const box = {
+    path, name, obj, depth,
+    x: parentBox.x + ax * parentBox.w - bx * w + ox,
+    y: parentBox.y + ay * parentBox.h - by * h + oy + stackShift,
+    w, h
+  };
+  boxes.push(box);
+
+  const vertical = obj.orientation !== 'horizontal';
+  let shift = 0;
+
+  childEntries(obj).forEach((kid, i) => {
+    const kidPath = `${path}.controls[${kid.index}].${kid.name}`;
+    place(kid.name, kid.obj, box, kidPath, depth + 1, boxes, obj.type === 'stack_panel' ? shift : 0);
+    if (obj.type === 'stack_panel') {
+      const s = sizeOf(kid.obj, box.w, box.h);
+      shift += vertical ? s.h : s.w;
+    }
+  });
+
+  // A factory renders the collection: draw one sample entry so the row is visible where the
+  // player will actually see it.
+  if (obj.factory && obj.factory.control_name) {
+    const entry = lookupElement(obj.factory.control_name);
+    if (entry) place('factory entry', entry, box, path + '::factory', depth + 1, boxes, shift, true);
+  }
+}
+
+function numOf(v, parentDim) {
+  if (typeof v === 'number') return v;
+  const s = String(v);
+  if (s.includes('%')) return parentDim * (parseFloat(s) / 100 || 0);
+  const n = parseFloat(s);
+  return isNaN(n) ? 0 : n;
+}
+
+// ===== Rendering =====
 function renderPreview() {
+  const screen = UI_SCREENS[device];
+  const viewport = $('#preview-viewport');
+  const stage = $('#preview-stage');
+  if (!stage) return;
+
+  const avail = (viewport.clientWidth || 320) - 24;
+  uiScale = Math.max(0.4, (avail / screen.w) * (zoomLevel / 100));
+
+  stage.style.width = screen.w * uiScale + 'px';
+  stage.style.height = screen.h * uiScale + 'px';
+  previewScreen.style.width = screen.w * uiScale + 'px';
+  previewScreen.style.height = screen.h * uiScale + 'px';
+  previewScreen.classList.toggle('with-grid', showGrid);
+  previewScreen.style.setProperty('--grid-step', 10 * uiScale + 'px');
   previewScreen.innerHTML = '';
-  const screenW = previewScreen.clientWidth || 320;
-  const screenH = previewScreen.clientHeight || 180;
 
-  elements.forEach(el => {
-    if (!el.obj.type || el.obj.visible === false) return;
+  if (showHud) renderGuides(screen);
 
-    const pos = computePosition(el.obj, screenW, screenH);
-    if (!pos) return;
+  layoutBoxes().forEach(box => {
+    if (box.obj.visible === false) return;
+    previewScreen.appendChild(buildBox(box, screen));
+  });
 
-    const div = document.createElement('div');
-    div.className = 'preview-el';
-    if (el.obj.type) div.classList.add('type-' + el.obj.type.replace('stack_panel', 'panel'));
-    div.dataset.path = el.path;
-    div.textContent = el.name;
-    div.style.left = pos.x + 'px';
-    div.style.top = pos.y + 'px';
-    div.style.width = pos.w + 'px';
-    div.style.height = pos.h + 'px';
-    if (el.obj.alpha !== undefined) div.style.opacity = el.obj.alpha;
-    if (selectedPath === el.path) div.classList.add('active');
+  updateStatus(screen);
+}
 
-    div.addEventListener('click', () => selectElement(el.path, el.obj, el.name, el.type));
-
-    previewScreen.appendChild(div);
+function renderGuides(screen) {
+  HUD_GUIDES.forEach(g => {
+    const el = document.createElement('div');
+    el.className = 'hud-guide guide-' + g.id;
+    const x = g.ax * screen.w - g.ax * g.w + g.ox;
+    const y = g.ay * screen.h - g.ay * g.h + g.oy;
+    el.style.left = x * uiScale + 'px';
+    el.style.top = y * uiScale + 'px';
+    el.style.width = g.w * uiScale + 'px';
+    el.style.height = g.h * uiScale + 'px';
+    el.dataset.name = g.text;
+    previewScreen.appendChild(el);
   });
 }
 
-function computePosition(obj, screenW, screenH) {
-  const parseSize = (v, parentDim) => {
-    if (typeof v === 'number') return v;
-    const s = String(v);
-    if (s.includes('%')) {
-      const n = parseFloat(s);
-      return isNaN(n) ? 20 : (n / 100) * parentDim;
-    }
-    if (s === 'default' || s === 'wrap_content' || s === '100%c' || s === '100%cm') return 30;
-    const n = parseFloat(s);
-    return isNaN(n) ? 20 : n;
+function buildBox(box, screen) {
+  const div = document.createElement('div');
+  div.className = 'preview-el';
+  const type = box.obj.type || 'panel';
+  div.classList.add('type-' + type.replace('stack_panel', 'panel'));
+  div.dataset.path = box.path;
+  div.style.left = box.x * uiScale + 'px';
+  div.style.top = box.y * uiScale + 'px';
+  div.style.width = Math.max(2, box.w * uiScale) + 'px';
+  div.style.height = Math.max(2, box.h * uiScale) + 'px';
+  if (box.obj.alpha !== undefined) div.style.opacity = Math.max(0.15, box.obj.alpha);
+  if (selectedPath === box.path) div.classList.add('active');
+
+  const spills =
+    box.x < -0.5 || box.y < -0.5 ||
+    box.x + box.w > screen.w + 0.5 || box.y + box.h > screen.h + 0.5;
+  if (spills) div.classList.add('offscreen');
+
+  if (type === 'label') {
+    const text = document.createElement('span');
+    text.className = 'el-text';
+    text.textContent = labelText(box.obj);
+    text.style.fontSize = 8 * uiScale + 'px';
+    text.style.justifyContent =
+      box.obj.text_alignment === 'right' ? 'flex-end'
+      : box.obj.text_alignment === 'center' ? 'center' : 'flex-start';
+    div.appendChild(text);
+  } else if (showLabels) {
+    const tag = document.createElement('span');
+    tag.className = 'el-tag';
+    tag.textContent = box.name;
+    div.appendChild(tag);
+  }
+
+  div.addEventListener('pointerdown', e => beginDrag(e, box));
+  return div;
+}
+
+// ===== Dragging =====
+function beginDrag(e, box) {
+  const el = elements.find(x => x.path === box.path);
+  if (el) selectElement(el.path, el.obj, el.name, el.type);
+
+  // A factory sample and inherited elements have no editable offset of their own.
+  if (!el || !Array.isArray(box.obj.offset)) {
+    if (!el) showToast('This box is drawn from another element — select that one to move it');
+    return;
+  }
+
+  e.preventDefault();
+  dragState = {
+    obj: box.obj,
+    startX: e.clientX,
+    startY: e.clientY,
+    baseX: numOf(box.obj.offset[0], 0),
+    baseY: numOf(box.obj.offset[1], 0),
+    sx: typeof box.obj.offset[0] === 'string' && box.obj.offset[0].includes('%') ? '%' : '',
+    sy: typeof box.obj.offset[1] === 'string' && box.obj.offset[1].includes('%') ? '%' : ''
   };
+  e.target.setPointerCapture && e.target.setPointerCapture(e.pointerId);
+}
 
-  const size = obj.size || [30, 15];
-  let w = parseSize(size[0], screenW);
-  let h = parseSize(size[1], screenH);
-  w = Math.max(8, Math.min(w, screenW));
-  h = Math.max(6, Math.min(h, screenH));
+function moveDrag(e) {
+  if (!dragState) return;
+  const dx = (e.clientX - dragState.startX) / uiScale;
+  const dy = (e.clientY - dragState.startY) / uiScale;
+  const step = e.shiftKey ? 0.5 : nudgeStep;
+  const snap = v => Math.round(v / step) * step;
 
-  // Anchor position
-  const anchorFrom = obj.anchor_from || 'center';
-  let ax = 0.5, ay = 0.5;
-  if (anchorFrom.includes('left')) ax = 0;
-  if (anchorFrom.includes('right')) ax = 1;
-  if (anchorFrom.includes('top')) ay = 0;
-  if (anchorFrom.includes('bottom')) ay = 1;
+  const nx = snap(dragState.baseX + dx);
+  const ny = snap(dragState.baseY + dy);
+  if (nx !== dragState.baseX || ny !== dragState.baseY) dragState.moved = true;
+  dragState.obj.offset = [
+    dragState.sx ? nx + dragState.sx : nx,
+    dragState.sy ? ny + dragState.sy : ny
+  ];
+  renderPreview();
+  if (selectedPath) {
+    const el = elements.find(x => x.path === selectedPath);
+    if (el && el.obj === dragState.obj) renderProps(el.obj, el.name, el.type);
+  }
+}
 
-  const anchorTo = obj.anchor_to || anchorFrom;
-  let bx = 0.5, by = 0.5;
-  if (anchorTo.includes('left')) bx = 0;
-  if (anchorTo.includes('right')) bx = 1;
-  if (anchorTo.includes('top')) by = 0;
-  if (anchorTo.includes('bottom')) by = 1;
+function endDrag() {
+  if (!dragState) return;
+  const moved = dragState.moved;
+  dragState = null;
+  if (moved) { pushHistory(); saveDraft(); }
+}
 
-  // Offset
-  const offset = obj.offset || [0, 0];
-  const ox = typeof offset[0] === 'number' ? offset[0] : parseFloat(offset[0]) || 0;
-  const oy = typeof offset[1] === 'number' ? offset[1] : parseFloat(offset[1]) || 0;
+// ===== Status line =====
+function updateStatus(screen) {
+  const status = $('#preview-status');
+  if (!status) return;
+  const box = layoutBoxes().find(b => b.path === selectedPath);
+  if (!box) {
+    status.innerHTML = '<span class="ps-hint">Drag any box to move it. Arrow keys nudge the selected element, Shift &times;10, Ctrl+Z undo.</span>';
+    return;
+  }
+  const r = v => Math.round(v * 10) / 10;
+  const gapRight = screen.w - (box.x + box.w);
+  const gapBottom = screen.h - (box.y + box.h);
+  const spills = box.x < -0.5 || box.y < -0.5 || gapRight < -0.5 || gapBottom < -0.5;
+  status.innerHTML =
+    `<b>${esc(box.name)}</b>` +
+    `<span>size ${r(box.w)}&times;${r(box.h)}</span>` +
+    `<span>left ${r(box.x)}</span><span>top ${r(box.y)}</span>` +
+    `<span>right ${r(gapRight)}</span><span>bottom ${r(gapBottom)}</span>` +
+    (spills ? '<span class="ps-warn">runs off the screen</span>' : '');
+}
 
-  let x = ax * screenW - bx * w + ox;
-  let y = ay * screenH - by * h + oy;
+// ===== Undo =====
+function pushHistory() {
+  if (!jsonData) return;
+  uiHistory = uiHistory.slice(0, histIndex + 1);
+  uiHistory.push(JSON.stringify(jsonData));
+  if (uiHistory.length > 60) uiHistory.shift();
+  histIndex = uiHistory.length - 1;
+}
 
-  // Clamp to viewport
-  x = Math.max(-w + 4, Math.min(x, screenW - 4));
-  y = Math.max(-h + 4, Math.min(y, screenH - 4));
+function restoreHistory(step) {
+  const next = histIndex + step;
+  if (next < 0 || next >= uiHistory.length) { showToast(step < 0 ? 'Nothing to undo' : 'Nothing to redo'); return; }
+  histIndex = next;
+  jsonData = JSON.parse(uiHistory[histIndex]);
+  elements = [];
+  flattenElements(jsonData, '');
+  renderTree();
+  renderPreview();
+  const el = elements.find(x => x.path === selectedPath);
+  if (el) renderProps(el.obj, el.name, el.type);
+  showToast(step < 0 ? 'Undo' : 'Redo');
+}
 
-  return { x, y, w, h };
+// ===== Draft persistence =====
+function saveDraft() {
+  try {
+    if (jsonData) localStorage.setItem('bjue.draft', JSON.stringify(jsonData));
+  } catch (e) { /* private mode — nothing to do */ }
+}
+
+function loadDraft() {
+  try {
+    const raw = localStorage.getItem('bjue.draft');
+    if (raw) { jsonInput.value = JSON.stringify(JSON.parse(raw), null, 2); return true; }
+  } catch (e) { /* ignore */ }
+  return false;
+}
+
+// ===== Nudge with the keyboard =====
+function nudgeSelected(dx, dy) {
+  const el = elements.find(x => x.path === selectedPath);
+  if (!el || !Array.isArray(el.obj.offset)) return;
+  const cur = el.obj.offset;
+  const sx = typeof cur[0] === 'string' && cur[0].includes('%') ? '%' : '';
+  const sy = typeof cur[1] === 'string' && cur[1].includes('%') ? '%' : '';
+  const nx = numOf(cur[0], 0) + dx;
+  const ny = numOf(cur[1], 0) + dy;
+  el.obj.offset = [sx ? nx + sx : nx, sy ? ny + sy : ny];
+  pushHistory();
+  renderPreview();
+  renderProps(el.obj, el.name, el.type);
+  saveDraft();
 }
 
 function setZoom(level) {
-  zoomLevel = Math.max(50, Math.min(200, level));
+  zoomLevel = Math.max(50, Math.min(400, level));
   $('#zoom-level').textContent = zoomLevel + '%';
-  previewScreen.style.transform = `scale(${zoomLevel / 100})`;
+  renderPreview();
 }
 
 // ===== Export =====
