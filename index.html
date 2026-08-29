@@ -130,8 +130,35 @@
                             <button class="btn-icon" id="btn-zoom-in" title="Zoom in">+</button>
                         </div>
                     </div>
+
+                    <div class="preview-toolbar">
+                        <label class="tb-field">
+                            <span>Screen</span>
+                            <select id="device-select">
+                                <option value="desktop">Desktop 16:9 &middot; 427&times;240</option>
+                                <option value="phone">Phone 19.5:9 &middot; 520&times;240</option>
+                                <option value="tablet">Tablet 4:3 &middot; 320&times;240</option>
+                            </select>
+                        </label>
+                        <label class="tb-field tb-grow">
+                            <span>Sample text</span>
+                            <input type="text" id="sample-text" value="&#x1f5d1; Очистка: 4:12" spellcheck="false">
+                        </label>
+                        <div class="tb-toggles">
+                            <label class="tb-check"><input type="checkbox" id="opt-hud" checked> HUD guides</label>
+                            <label class="tb-check"><input type="checkbox" id="opt-grid" checked> Grid</label>
+                            <label class="tb-check"><input type="checkbox" id="opt-labels" checked> Names</label>
+                        </div>
+                    </div>
+
                     <div class="preview-viewport" id="preview-viewport">
-                        <div class="preview-screen" id="preview-screen"></div>
+                        <div class="preview-stage" id="preview-stage">
+                            <div class="preview-screen" id="preview-screen"></div>
+                        </div>
+                    </div>
+
+                    <div class="preview-status" id="preview-status">
+                        <span class="ps-hint">Drag any box to move it. Arrow keys nudge the selected element, Shift &times;10, Ctrl+Z undo.</span>
                     </div>
                 </div>
             </div>

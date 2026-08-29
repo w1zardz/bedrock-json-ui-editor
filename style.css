@@ -552,16 +552,57 @@ body {
     position: relative;
 }
 
+.preview-stage {
+    position: relative;
+    flex-shrink: 0;
+}
+
 .preview-screen {
     width: 320px;
     height: 180px;
-    background: rgba(0, 0, 0, 0.6);
+    background:
+        linear-gradient(180deg, #2b3a55 0%, #3d5a80 55%, #4a6b3f 55%, #2f4526 100%);
     border: 1px solid var(--border);
     border-radius: 4px;
     position: relative;
     overflow: hidden;
     flex-shrink: 0;
-    transition: transform 0.2s;
+}
+
+/* Сетка шагом 10 UI-пикселей: расстояния читаются глазом, без счёта в уме. */
+.preview-screen.with-grid {
+    background-image:
+        linear-gradient(rgba(255, 255, 255, 0.07) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.07) 1px, transparent 1px),
+        linear-gradient(180deg, #2b3a55 0%, #3d5a80 55%, #4a6b3f 55%, #2f4526 100%);
+    background-size: var(--grid-step, 10px) var(--grid-step, 10px),
+                     var(--grid-step, 10px) var(--grid-step, 10px),
+                     100% 100%;
+}
+
+/* Где клиент сам рисует свой интерфейс. Против этих рамок и выравнивают элемент. */
+.hud-guide {
+    position: absolute;
+    border: 1px dashed rgba(255, 255, 255, 0.28);
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.05);
+    pointer-events: none;
+}
+
+.hud-guide::after {
+    content: attr(data-name);
+    position: absolute;
+    left: 2px;
+    top: 1px;
+    font-family: var(--mono);
+    font-size: 0.5rem;
+    color: rgba(255, 255, 255, 0.45);
+    white-space: nowrap;
+}
+
+.hud-guide.guide-logo {
+    border-color: rgba(46, 204, 113, 0.55);
+    background: rgba(46, 204, 113, 0.12);
 }
 
 .preview-el {
@@ -594,6 +635,114 @@ body {
     background: rgba(243, 156, 18, 0.08);
     color: #f39c12;
 }
+
+.preview-el { cursor: grab; touch-action: none; }
+.preview-el:active { cursor: grabbing; }
+
+/* Ушедшее за край не прячется и не подрезается: ровно это и надо увидеть. */
+.preview-el.offscreen {
+    border-color: #e74c3c;
+    border-style: solid;
+    background: repeating-linear-gradient(
+        45deg,
+        rgba(231, 76, 60, 0.22) 0 6px,
+        rgba(231, 76, 60, 0.06) 6px 12px
+    );
+}
+
+/* Настоящий текст на своём месте, с тем же выравниванием, что задано в JSON. */
+.el-text {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    height: 100%;
+    color: #fff;
+    text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.85);
+    font-family: var(--mono);
+    line-height: 1;
+    white-space: nowrap;
+    pointer-events: none;
+}
+
+.el-tag {
+    pointer-events: none;
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.preview-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 0.75rem;
+    align-items: flex-end;
+    padding: 0.6rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-elevated);
+}
+
+.tb-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.tb-field.tb-grow { flex: 1; min-width: 150px; }
+
+.tb-field select,
+.tb-field input {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    padding: 0.35rem 0.5rem;
+    min-height: 34px;
+    text-transform: none;
+    letter-spacing: 0;
+}
+
+.tb-toggles {
+    display: flex;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    padding-bottom: 0.35rem;
+}
+
+.tb-check {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    cursor: pointer;
+    user-select: none;
+}
+
+.tb-check input { accent-color: var(--accent); width: 15px; height: 15px; }
+
+.preview-status {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem 0.75rem;
+    align-items: center;
+    padding: 0.5rem 0.75rem;
+    border-top: 1px solid var(--border);
+    background: var(--bg-elevated);
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    min-height: 34px;
+}
+
+.preview-status b { color: var(--text); }
+.preview-status .ps-hint { color: var(--text-dim); font-family: var(--font, inherit); }
+.preview-status .ps-warn { color: #e74c3c; font-weight: 600; }
 
 .preview-controls {
     display: flex;
