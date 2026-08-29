@@ -870,7 +870,7 @@ const HUD_GUIDES = [
   { id: 'health',  w: 81,  h: 9,  ax: 0.5, ay: 1,   ox: -50, oy: -25, text: 'health' },
   { id: 'hunger',  w: 81,  h: 9,  ax: 0.5, ay: 1,   ox: 50,  oy: -25, text: 'hunger' },
   { id: 'logo',    w: 27,  h: 27, ax: 1,   ay: 1,   ox: -4,  oy: 0,   text: 'client logo' },
-  { id: 'chat',    w: 200, h: 60, ax: 0,   ay: 1,   ox: 2,   oy: -30, text: 'chat' },
+  { id: 'chat',    w: 200, h: 60, ax: 0,   ay: 0,   ox: 2,   oy: 2,   text: 'chat' },
   { id: 'board',   w: 96,  h: 90, ax: 1,   ay: 0.5, ox: -1,  oy: 0,   text: 'sidebar' }
 ];
 
@@ -1143,6 +1143,11 @@ function buildBox(box, screen) {
     box.x < -0.5 || box.y < -0.5 ||
     box.x + box.w > screen.w + 0.5 || box.y + box.h > screen.h + 0.5;
   if (spills) div.classList.add('offscreen');
+
+  // A box that covers most of the screen is a container, not a thing you drag: it sits under
+  // everything and would swallow every stray grab, moving the whole layout instead of the
+  // one row you aimed at. Select those from the tree.
+  if (box.w * box.h > screen.w * screen.h * 0.7) div.classList.add('passthrough');
 
   if (type === 'label') {
     const text = document.createElement('span');
