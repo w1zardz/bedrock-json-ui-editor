@@ -730,6 +730,56 @@ body {
 
 .tb-check input { accent-color: var(--accent); width: 15px; height: 15px; }
 
+/* Кадр из игры под элементами: гайды приближают HUD, а скриншот игрока и ЕСТЬ HUD. */
+.preview-shot {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: fill;
+    pointer-events: none;
+    image-rendering: pixelated;
+}
+
+.preview-screen.with-shot { background-image: none; background-color: #000; }
+
+/* Линия привязки: видно, К ЧЕМУ прилипло, иначе прыжок бокса выглядит сбоем. */
+.snap-line {
+    position: absolute;
+    background: #ff4d9d;
+    pointer-events: none;
+    z-index: 20;
+}
+
+.snap-line.snap-v { top: 0; bottom: 0; width: 1px; }
+.snap-line.snap-h { left: 0; right: 0; height: 1px; }
+
+.preview-viewport.drop-target { outline: 2px dashed var(--accent); outline-offset: -6px; }
+
+/* display:flex у полей перебивает атрибут hidden — без этого «Fade» и «Clear» висят
+   на панели, когда скриншота ещё нет. */
+[hidden] { display: none !important; }
+
+.tb-shot {
+    display: flex;
+    align-items: flex-end;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.btn-shot { cursor: pointer; padding: 0.4rem 0.7rem; font-size: 0.75rem; }
+
+.tb-fade input[type="range"] { width: 90px; accent-color: var(--accent); }
+
+.preview-actions {
+    display: flex;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    padding: 0.5rem 0.75rem 0;
+}
+
+.preview-actions .btn { font-size: 0.7rem; padding: 0.35rem 0.6rem; }
+
 .preview-status {
     display: flex;
     flex-wrap: wrap;
