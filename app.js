@@ -118,6 +118,30 @@ function init() {
   bindToggle('#opt-hud', v => { showHud = v; });
   bindToggle('#opt-grid', v => { showGrid = v; });
   bindToggle('#opt-labels', v => { showLabels = v; });
+  bindToggle('#opt-snap', v => { snapEnabled = v; });
+
+  // Screenshot backdrop: pick a file, or just drop one on the preview.
+  const shotInput = $('#shot-input');
+  if (shotInput) shotInput.addEventListener('change', () => loadShot(shotInput.files[0]));
+  const fade = $('#shot-fade');
+  if (fade) fade.addEventListener('input', () => { shotFade = fade.value / 100; renderPreview(); });
+  const clearShot = $('#btn-shot-clear');
+  if (clearShot) clearShot.addEventListener('click', () => setShot(null));
+  const viewport = $('#preview-viewport');
+  if (viewport) {
+    viewport.addEventListener('dragover', e => { e.preventDefault(); viewport.classList.add('drop-target'); });
+    viewport.addEventListener('dragleave', () => viewport.classList.remove('drop-target'));
+    viewport.addEventListener('drop', e => {
+      e.preventDefault();
+      viewport.classList.remove('drop-target');
+      const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      if (file) loadShot(file);
+    });
+  }
+
+  $('#btn-copy-offset').addEventListener('click', copyOffset);
+  $('#btn-copy-element').addEventListener('click', copyElement);
+  $('#btn-reset-offset').addEventListener('click', resetOffset);
 
   // Dragging boxes straight on the preview
   window.addEventListener('pointermove', moveDrag);
@@ -147,6 +171,56 @@ function init() {
   switchTab('tree');
 }
 
+// ===== Screenshot backdrop =====
+function loadShot(file) {
+  if (!file || !/^image\//.test(file.type)) { showToast('That is not an image'); return; }
+  const reader = new FileReader();
+  reader.onload = () => setShot(reader.result);
+  reader.readAsDataURL(file);
+}
+
+function setShot(url) {
+  if (shotUrl && shotUrl.startsWith('blob:')) URL.revokeObjectURL(shotUrl);
+  shotUrl = url;
+  const has = !!url;
+  const wrap = $('#shot-fade-wrap');
+  const clear = $('#btn-shot-clear');
+  if (wrap) wrap.hidden = !has;
+  if (clear) clear.hidden = !has;
+  renderPreview();
+  showToast(has ? 'Screenshot loaded — line elements up against it' : 'Screenshot cleared');
+}
+
+// ===== Clipboard helpers =====
+function selectedElement() {
+  return elements.find(x => x.path === selectedPath) || null;
+}
+
+function copyOffset() {
+  const el = selectedElement();
+  if (!el || !Array.isArray(el.obj.offset)) { showToast('Select an element with an offset'); return; }
+  const text = JSON.stringify(el.obj.offset);
+  navigator.clipboard.writeText(text).then(() => showToast('Copied ' + text));
+}
+
+function copyElement() {
+  const el = selectedElement();
+  if (!el) { showToast('Select an element first'); return; }
+  const text = JSON.stringify({ [el.name]: el.obj }, null, 2);
+  navigator.clipboard.writeText(text).then(() => showToast('Copied ' + el.name));
+}
+
+function resetOffset() {
+  const el = selectedElement();
+  if (!el || !Array.isArray(el.obj.offset)) { showToast('Select an element with an offset'); return; }
+  setOffset(el.obj, 0, 0);
+  pushHistory();
+  renderPreview();
+  renderProps(el.obj, el.name, el.type);
+  saveDraft();
+  showToast('Offset reset to 0, 0');
+}
+
 function bindToggle(sel, apply) {
   const box = $(sel);
   if (!box) return;
@@ -157,6 +231,11 @@ function bindToggle(sel, apply) {
 function switchTab(tab) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
   document.querySelectorAll('.panel[data-panel]').forEach(p => p.classList.toggle('active-panel', p.dataset.panel === tab));
+
+  // The preview scales itself to the panel width, and a hidden panel is zero wide: without
+  // this redraw the stage keeps the scale it had while invisible, and every drag lands
+  // somewhere other than where the cursor is.
+  if (tab === 'preview' && jsonData) renderPreview();
 }
 
 // ===== Parse JSON =====
@@ -855,7 +934,9 @@ const UI_SCREENS = {
 
 let device = 'desktop';
 let sampleText = '\u{1F5D1} Очистка: 4:12';
-let showHud = true, showGrid = true, showLabels = true;
+let showHud = true, showGrid = true, showLabels = true, snapEnabled = true;
+let shotUrl = null, shotFade = 0.6;
+let snapLines = [];
 let uiScale = 1;
 let dragState = null;
 
@@ -1098,14 +1179,33 @@ function renderPreview() {
   previewScreen.style.width = screen.w * uiScale + 'px';
   previewScreen.style.height = screen.h * uiScale + 'px';
   previewScreen.classList.toggle('with-grid', showGrid);
+  previewScreen.classList.toggle('with-shot', !!shotUrl);
   previewScreen.style.setProperty('--grid-step', 10 * uiScale + 'px');
   previewScreen.innerHTML = '';
+
+  // A screenshot of the real game is the only honest backdrop: guides approximate the HUD,
+  // the player's own frame IS the HUD, at the exact size the client draws it.
+  if (shotUrl) {
+    const shot = document.createElement('img');
+    shot.className = 'preview-shot';
+    shot.src = shotUrl;
+    shot.style.opacity = shotFade;
+    previewScreen.appendChild(shot);
+  }
 
   if (showHud) renderGuides(screen);
 
   layoutBoxes().forEach(box => {
     if (box.obj.visible === false) return;
     previewScreen.appendChild(buildBox(box, screen));
+  });
+
+  snapLines.forEach(line => {
+    const el = document.createElement('div');
+    el.className = 'snap-line ' + (line.axis === 'x' ? 'snap-v' : 'snap-h');
+    if (line.axis === 'x') el.style.left = line.at * uiScale + 'px';
+    else el.style.top = line.at * uiScale + 'px';
+    previewScreen.appendChild(el);
   });
 
   updateStatus(screen);
@@ -1183,6 +1283,7 @@ function beginDrag(e, box) {
   e.preventDefault();
   dragState = {
     obj: box.obj,
+    path: box.path,
     startX: e.clientX,
     startY: e.clientY,
     baseX: numOf(box.obj.offset[0], 0),
@@ -1190,7 +1291,11 @@ function beginDrag(e, box) {
     sx: typeof box.obj.offset[0] === 'string' && box.obj.offset[0].includes('%') ? '%' : '',
     sy: typeof box.obj.offset[1] === 'string' && box.obj.offset[1].includes('%') ? '%' : ''
   };
-  e.target.setPointerCapture && e.target.setPointerCapture(e.pointerId);
+  // Capture is a nicety — it keeps the drag alive when the cursor outruns the box. Some
+  // pointer ids cannot be captured at all, and losing the whole drag over that is worse.
+  try {
+    if (e.target.setPointerCapture) e.target.setPointerCapture(e.pointerId);
+  } catch (err) { /* drag still works through the window listeners */ }
 }
 
 function moveDrag(e) {
@@ -1198,15 +1303,24 @@ function moveDrag(e) {
   const dx = (e.clientX - dragState.startX) / uiScale;
   const dy = (e.clientY - dragState.startY) / uiScale;
   const step = e.shiftKey ? 0.5 : nudgeStep;
-  const snap = v => Math.round(v / step) * step;
+  const round = v => Math.round(v / step) * step;
 
-  const nx = snap(dragState.baseX + dx);
-  const ny = snap(dragState.baseY + dy);
+  let nx = round(dragState.baseX + dx);
+  let ny = round(dragState.baseY + dy);
   if (nx !== dragState.baseX || ny !== dragState.baseY) dragState.moved = true;
-  dragState.obj.offset = [
-    dragState.sx ? nx + dragState.sx : nx,
-    dragState.sy ? ny + dragState.sy : ny
-  ];
+  setOffset(dragState.obj, nx, ny);
+
+  // Snapping runs on the laid-out box, not on the raw offset: what you line up is the edge
+  // of the element, and where that edge lands depends on the anchor and on the parent.
+  snapLines = [];
+  if (snapEnabled && !e.altKey) {
+    const box = layoutBoxes().find(b => b.path === dragState.path);
+    if (box) {
+      const fix = snapCorrection(box);
+      if (fix.dx || fix.dy) setOffset(dragState.obj, nx + fix.dx, ny + fix.dy);
+      snapLines = fix.lines;
+    }
+  }
   renderPreview();
   if (selectedPath) {
     const el = elements.find(x => x.path === selectedPath);
@@ -1214,10 +1328,64 @@ function moveDrag(e) {
   }
 }
 
+function setOffset(obj, x, y) {
+  const cur = obj.offset || [0, 0];
+  const sx = typeof cur[0] === 'string' && cur[0].includes('%') ? '%' : '';
+  const sy = typeof cur[1] === 'string' && cur[1].includes('%') ? '%' : '';
+  obj.offset = [sx ? x + sx : x, sy ? y + sy : y];
+}
+
+// ===== Snapping =====
+// Targets are the screen edges and the edges of every HUD landmark: those are the things a
+// layout is actually lined up against.
+const SNAP_TOLERANCE = 2.5;
+
+function snapTargets(screen) {
+  const xs = [0, screen.w / 2, screen.w];
+  const ys = [0, screen.h / 2, screen.h];
+  if (showHud) {
+    HUD_GUIDES.forEach(g => {
+      const x = g.ax * screen.w - g.ax * g.w + g.ox;
+      const y = g.ay * screen.h - g.ay * g.h + g.oy;
+      xs.push(x, x + g.w);
+      ys.push(y, y + g.h);
+    });
+  }
+  return { xs, ys };
+}
+
+function snapCorrection(box) {
+  const screen = UI_SCREENS[device];
+  const { xs, ys } = snapTargets(screen);
+  const lines = [];
+  let dx = 0, dy = 0;
+
+  const best = (edges, targets) => {
+    let pick = null;
+    edges.forEach(edge => {
+      targets.forEach(t => {
+        const delta = t - edge;
+        if (Math.abs(delta) <= SNAP_TOLERANCE && (!pick || Math.abs(delta) < Math.abs(pick.delta))) {
+          pick = { delta, at: t };
+        }
+      });
+    });
+    return pick;
+  };
+
+  const hit = best([box.x, box.x + box.w], xs);
+  if (hit) { dx = hit.delta; lines.push({ axis: 'x', at: hit.at }); }
+  const vit = best([box.y, box.y + box.h], ys);
+  if (vit) { dy = vit.delta; lines.push({ axis: 'y', at: vit.at }); }
+  return { dx, dy, lines };
+}
+
 function endDrag() {
   if (!dragState) return;
   const moved = dragState.moved;
   dragState = null;
+  snapLines = [];
+  renderPreview();
   if (moved) { pushHistory(); saveDraft(); }
 }
 

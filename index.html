@@ -148,6 +148,16 @@
                             <label class="tb-check"><input type="checkbox" id="opt-hud" checked> HUD guides</label>
                             <label class="tb-check"><input type="checkbox" id="opt-grid" checked> Grid</label>
                             <label class="tb-check"><input type="checkbox" id="opt-labels" checked> Names</label>
+                            <label class="tb-check"><input type="checkbox" id="opt-snap" checked> Snap</label>
+                        </div>
+                        <div class="tb-shot">
+                            <label class="btn btn-secondary btn-shot" for="shot-input">Screenshot&hellip;</label>
+                            <input type="file" id="shot-input" accept="image/*" hidden>
+                            <label class="tb-field tb-fade" id="shot-fade-wrap" hidden>
+                                <span>Fade</span>
+                                <input type="range" id="shot-fade" min="0" max="100" value="60">
+                            </label>
+                            <button class="btn btn-secondary" id="btn-shot-clear" hidden>Clear</button>
                         </div>
                     </div>
 
@@ -155,6 +165,12 @@
                         <div class="preview-stage" id="preview-stage">
                             <div class="preview-screen" id="preview-screen"></div>
                         </div>
+                    </div>
+
+                    <div class="preview-actions">
+                        <button class="btn btn-secondary" id="btn-copy-offset">Copy offset</button>
+                        <button class="btn btn-secondary" id="btn-copy-element">Copy element JSON</button>
+                        <button class="btn btn-secondary" id="btn-reset-offset">Reset offset</button>
                     </div>
 
                     <div class="preview-status" id="preview-status">
