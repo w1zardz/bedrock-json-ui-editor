@@ -16,7 +16,7 @@ A free, open-source **visual editor** for Minecraft Bedrock Edition JSON UI file
 - **Live measurements** — the status bar shows size and the distance from the selection to all four screen edges
 - **Keyboard + undo** — arrow keys nudge (Shift ×10), Ctrl+Z / Ctrl+Shift+Z walk the history
 - **Visual Property Editing** — adjust `offset`, `size`, `anchor_from`, `anchor_to`, `alpha`, `layer`, and more with intuitive controls
-- **Nudge Buttons** — move elements up/down/left/right with configurable step size (0.5px to 20px)
+- **Nudge Buttons** — move elements up/down/left/right with configurable step size (0.5 to 20 in the coordinate’s current unit: pixels or percentage points)
 - **Long Press** — hold nudge buttons for continuous movement (perfect for mobile)
 - **Element Tree** — navigate your JSON UI structure with collapsible tree, search, and type badges
 - **Mobile-First** — fully optimized for phones and tablets with tab navigation
@@ -61,6 +61,10 @@ A free, open-source **visual editor** for Minecraft Bedrock Edition JSON UI file
 ## Tech Stack
 
 Pure HTML + CSS + JavaScript. No frameworks, no build step, no dependencies. Deploys to GitHub Pages as-is.
+
+## Tests
+
+Run `node --test` with Node.js 18 or newer. The regression tests exercise property changes, keyboard/button nudges, undo/redo, and draft persistence without installing dependencies.
 
 ## Contributing
 

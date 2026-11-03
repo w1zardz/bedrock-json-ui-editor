@@ -679,12 +679,12 @@ function createOffsetEditor(obj, offset) {
   // Step selector
   const stepRow = document.createElement('div');
   stepRow.className = 'prop-step';
-  stepRow.innerHTML = `<label>Step:</label>`;
+  stepRow.innerHTML = `<label>Step (current unit):</label>`;
   const stepSel = document.createElement('select');
   stepSel.className = 'step-select';
   [0.5, 1, 2, 5, 10, 20].forEach(v => {
     const o = document.createElement('option');
-    o.value = v; o.textContent = v + 'px';
+    o.value = v; o.textContent = String(v);
     if (v === nudgeStep) o.selected = true;
     stepSel.appendChild(o);
   });
@@ -692,34 +692,27 @@ function createOffsetEditor(obj, offset) {
   stepRow.appendChild(stepSel);
   wrap.appendChild(stepRow);
 
-  const parseVal = v => {
-    if (typeof v === 'number') return v;
-    const n = parseFloat(String(v));
-    return isNaN(n) ? 0 : n;
-  };
-
-  const getSuffix = v => {
-    if (typeof v === 'number') return '';
-    const m = String(v).match(/[a-z%]+$/i);
-    return m ? m[0] : '';
-  };
-
-  let xVal = parseVal(offset[0]);
-  let yVal = parseVal(offset[1]);
-  let xSuffix = getSuffix(offset[0]);
-  let ySuffix = getSuffix(offset[1]);
-
   const update = () => {
-    obj.offset = [
-      xSuffix ? xVal + xSuffix : xVal,
-      ySuffix ? yVal + ySuffix : yVal
-    ];
-    xDisp.textContent = formatVal(xVal, xSuffix);
-    yDisp.textContent = formatVal(yVal, ySuffix);
-    renderPreview();
+    const current = obj.offset || offset;
+    xDisp.textContent = String(current[0]);
+    yDisp.textContent = String(current[1]);
+    commitEdit();
   };
 
-  const formatVal = (v, s) => (Number.isInteger(v) ? v : v.toFixed(1)) + s;
+  const nudge = (dx, dy) => {
+    if (nudgeOffset(obj, dx, dy)) update();
+  };
+
+  const edit = axis => {
+    const current = obj.offset || offset;
+    const input = prompt('Offset ' + (axis === 0 ? 'X' : 'Y') + ':', current[axis]);
+    if (input === null || !input.trim()) return;
+    const value = input.trim();
+    const number = Number(value);
+    obj.offset = [...current];
+    obj.offset[axis] = Number.isFinite(number) ? number : value;
+    update();
+  };
 
   // X row
   const xRow = document.createElement('div');
@@ -732,18 +725,12 @@ function createOffsetEditor(obj, offset) {
   xNudge.style.alignItems = 'center';
   xNudge.style.gap = '0.3rem';
 
-  const xMinus = createNudgeBtn('\u25C0', () => { xVal -= nudgeStep; update(); });
+  const xMinus = createNudgeBtn('\u25C0', () => nudge(-nudgeStep, 0));
   const xDisp = document.createElement('span');
   xDisp.className = 'nudge-val';
-  xDisp.textContent = formatVal(xVal, xSuffix);
-  xDisp.addEventListener('click', () => {
-    const input = prompt('Offset X:', obj.offset[0]);
-    if (input !== null) {
-      const parsed = parseFloat(input);
-      if (!isNaN(parsed)) { xVal = parsed; xSuffix = getSuffix(input); update(); }
-    }
-  });
-  const xPlus = createNudgeBtn('\u25B6', () => { xVal += nudgeStep; update(); });
+  xDisp.textContent = String(offset[0]);
+  xDisp.addEventListener('click', () => edit(0));
+  const xPlus = createNudgeBtn('\u25B6', () => nudge(nudgeStep, 0));
   xNudge.append(xMinus, xDisp, xPlus);
   xRow.appendChild(xNudge);
   wrap.appendChild(xRow);
@@ -758,18 +745,12 @@ function createOffsetEditor(obj, offset) {
   yNudge.style.alignItems = 'center';
   yNudge.style.gap = '0.3rem';
 
-  const yMinus = createNudgeBtn('\u25B2', () => { yVal -= nudgeStep; update(); });
+  const yMinus = createNudgeBtn('\u25B2', () => nudge(0, -nudgeStep));
   const yDisp = document.createElement('span');
   yDisp.className = 'nudge-val';
-  yDisp.textContent = formatVal(yVal, ySuffix);
-  yDisp.addEventListener('click', () => {
-    const input = prompt('Offset Y:', obj.offset[1]);
-    if (input !== null) {
-      const parsed = parseFloat(input);
-      if (!isNaN(parsed)) { yVal = parsed; ySuffix = getSuffix(input); update(); }
-    }
-  });
-  const yPlus = createNudgeBtn('\u25BC', () => { yVal += nudgeStep; update(); });
+  yDisp.textContent = String(offset[1]);
+  yDisp.addEventListener('click', () => edit(1));
+  const yPlus = createNudgeBtn('\u25BC', () => nudge(0, nudgeStep));
   yNudge.append(yMinus, yDisp, yPlus);
   yRow.appendChild(yNudge);
   wrap.appendChild(yRow);
@@ -809,7 +790,7 @@ function createSizeEditor(obj, size) {
       const n = parseFloat(v);
       if (!obj.size) obj.size = [...size];
       obj.size[idx] = (!isNaN(n) && v === String(n)) ? n : v;
-      renderPreview();
+      commitEdit();
     });
     row.appendChild(input);
     return row;
@@ -834,7 +815,7 @@ function createAnchorSelect(prop, value, obj) {
   });
   sel.addEventListener('change', () => {
     obj[prop] = sel.value;
-    renderPreview();
+    commitEdit();
   });
   row.appendChild(sel);
   return row;
@@ -850,8 +831,10 @@ function createNumberInput(prop, value, obj, min, max, step) {
   input.min = min; input.max = max; input.step = step;
   input.value = value;
   input.addEventListener('change', () => {
-    obj[prop] = parseFloat(input.value);
-    renderPreview();
+    const value = Number(input.value);
+    if (!input.value.trim() || !Number.isFinite(value)) { input.value = obj[prop]; return; }
+    obj[prop] = value;
+    commitEdit();
   });
   row.appendChild(input);
   return row;
@@ -874,7 +857,7 @@ function createBoolInput(prop, value, obj) {
   cb.addEventListener('change', () => {
     obj[prop] = cb.checked;
     label.textContent = cb.checked ? 'true' : 'false';
-    renderPreview();
+    commitEdit();
   });
   wrap.append(cb, label);
   row.appendChild(wrap);
@@ -893,6 +876,7 @@ function createTextInput(prop, value, obj) {
     const v = input.value;
     const n = parseFloat(v);
     obj[prop] = (!isNaN(n) && v === String(n)) ? n : v;
+    commitEdit();
   });
   row.appendChild(input);
   return row;
@@ -912,7 +896,7 @@ function createArrayInput(prop, arr, obj) {
       const v = input.value.trim();
       const n = parseFloat(v);
       obj[prop][idx] = (!isNaN(n) && v === String(n)) ? n : v;
-      renderPreview();
+      commitEdit();
     });
     row.appendChild(input);
     wrap.appendChild(row);
@@ -1410,11 +1394,20 @@ function updateStatus(screen) {
     (spills ? '<span class="ps-warn">runs off the screen</span>' : '');
 }
 
+// Commit all property controls through the same history/autosave boundary.
+function commitEdit() {
+  pushHistory();
+  saveDraft();
+  renderPreview();
+}
+
 // ===== Undo =====
 function pushHistory() {
   if (!jsonData) return;
+  const snapshot = JSON.stringify(jsonData);
+  if (uiHistory[histIndex] === snapshot) return;
   uiHistory = uiHistory.slice(0, histIndex + 1);
-  uiHistory.push(JSON.stringify(jsonData));
+  uiHistory.push(snapshot);
   if (uiHistory.length > 60) uiHistory.shift();
   histIndex = uiHistory.length - 1;
 }
@@ -1424,6 +1417,7 @@ function restoreHistory(step) {
   if (next < 0 || next >= uiHistory.length) { showToast(step < 0 ? 'Nothing to undo' : 'Nothing to redo'); return; }
   histIndex = next;
   jsonData = JSON.parse(uiHistory[histIndex]);
+  saveDraft();
   elements = [];
   flattenElements(jsonData, '');
   renderTree();
@@ -1448,20 +1442,34 @@ function loadDraft() {
   return false;
 }
 
+// Move the numeric value in its existing unit, matching the property buttons.
+// Layout evaluation (numOf) is not suitable here: a percentage of zero is zero.
+function nudgeOffset(obj, dx, dy) {
+  const current = obj.offset || [0, 0];
+  const shift = (value, delta) => {
+    if (!delta) return value;
+    if (typeof value === 'number') return value + delta;
+    const match = String(value).trim().match(/^([+-]?(?:\d+(?:\.\d*)?|\.\d+))(%|px)?$/);
+    if (!match) return undefined;
+    const next = Number(match[1]) + delta;
+    return match[2] ? next + match[2] : next;
+  };
+  const next = [shift(current[0], dx), shift(current[1], dy)];
+  if (next.some(value => value === undefined)) {
+    showToast('Edit this offset expression directly');
+    return false;
+  }
+  obj.offset = next;
+  return true;
+}
+
 // ===== Nudge with the keyboard =====
 function nudgeSelected(dx, dy) {
   const el = elements.find(x => x.path === selectedPath);
   if (!el || !Array.isArray(el.obj.offset)) return;
-  const cur = el.obj.offset;
-  const sx = typeof cur[0] === 'string' && cur[0].includes('%') ? '%' : '';
-  const sy = typeof cur[1] === 'string' && cur[1].includes('%') ? '%' : '';
-  const nx = numOf(cur[0], 0) + dx;
-  const ny = numOf(cur[1], 0) + dy;
-  el.obj.offset = [sx ? nx + sx : nx, sy ? ny + sy : ny];
-  pushHistory();
-  renderPreview();
+  if (!nudgeOffset(el.obj, dx, dy)) return;
+  commitEdit();
   renderProps(el.obj, el.name, el.type);
-  saveDraft();
 }
 
 function setZoom(level) {
