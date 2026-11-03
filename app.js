@@ -1114,6 +1114,7 @@ function place(name, obj, parentBox, path, depth, boxes, stackShift) {
 
   const box = {
     path, name, obj, depth,
+    parentW: parentBox.w, parentH: parentBox.h,
     x: parentBox.x + ax * parentBox.w - bx * w + ox,
     y: parentBox.y + ay * parentBox.h - by * h + oy + stackShift,
     w, h
@@ -1258,22 +1259,27 @@ function beginDrag(e, box) {
   const el = elements.find(x => x.path === box.path);
   if (el) selectElement(el.path, el.obj, el.name, el.type);
 
-  // A factory sample and inherited elements have no editable offset of their own.
-  if (!el || !Array.isArray(box.obj.offset)) {
+  // Factory samples and offsets inherited from a template have no editable offset here.
+  if (!el || !Array.isArray(el.obj.offset)) {
     if (!el) showToast('This box is drawn from another element — select that one to move it');
+    return;
+  }
+
+  const axes = [dragAxis(el.obj.offset[0], box.parentW), dragAxis(el.obj.offset[1], box.parentH)];
+  if (axes.some(axis => !axis)) {
+    showToast('Edit this offset directly: its expression or parent size cannot be dragged');
     return;
   }
 
   e.preventDefault();
   dragState = {
-    obj: box.obj,
+    obj: el.obj,
     path: box.path,
     startX: e.clientX,
     startY: e.clientY,
-    baseX: numOf(box.obj.offset[0], 0),
-    baseY: numOf(box.obj.offset[1], 0),
-    sx: typeof box.obj.offset[0] === 'string' && box.obj.offset[0].includes('%') ? '%' : '',
-    sy: typeof box.obj.offset[1] === 'string' && box.obj.offset[1].includes('%') ? '%' : ''
+    baseX: axes[0].pixels,
+    baseY: axes[1].pixels,
+    axes
   };
   // Capture is a nicety — it keeps the drag alive when the cursor outruns the box. Some
   // pointer ids cannot be captured at all, and losing the whole drag over that is worse.
@@ -1289,10 +1295,14 @@ function moveDrag(e) {
   const step = e.shiftKey ? 0.5 : nudgeStep;
   const round = v => Math.round(v / step) * step;
 
-  let nx = round(dragState.baseX + dx);
-  let ny = round(dragState.baseY + dy);
-  if (nx !== dragState.baseX || ny !== dragState.baseY) dragState.moved = true;
-  setOffset(dragState.obj, nx, ny);
+  // Quantize the movement, not the starting coordinate. A fractional percentage
+  // must not jump merely because the pointer moved along the other axis.
+  const nx = dragState.baseX + round(dx);
+  const ny = dragState.baseY + round(dy);
+  const moved = nx !== dragState.baseX || ny !== dragState.baseY;
+  if (!moved && !dragState.moved) return;
+  if (moved) dragState.moved = true;
+  setDragOffset(nx, ny);
 
   // Snapping runs on the laid-out box, not on the raw offset: what you line up is the edge
   // of the element, and where that edge lands depends on the anchor and on the parent.
@@ -1301,7 +1311,7 @@ function moveDrag(e) {
     const box = layoutBoxes().find(b => b.path === dragState.path);
     if (box) {
       const fix = snapCorrection(box);
-      if (fix.dx || fix.dy) setOffset(dragState.obj, nx + fix.dx, ny + fix.dy);
+      if (fix.dx || fix.dy) setDragOffset(nx + fix.dx, ny + fix.dy);
       snapLines = fix.lines;
     }
   }
@@ -1310,6 +1320,27 @@ function moveDrag(e) {
     const el = elements.find(x => x.path === selectedPath);
     if (el && el.obj === dragState.obj) renderProps(el.obj, el.name, el.type);
   }
+}
+
+// Dragging and snapping measure UI pixels. Percentages use the element's actual
+// parent dimensions, and are converted back only when writing the editable JSON.
+function dragAxis(value, parentDim) {
+  const match = String(value).trim().match(/^([+-]?(?:\d+(?:\.\d*)?|\.\d+))(%|px)?$/);
+  if (!match) return null;
+  const unit = match[2] || '';
+  const factor = unit === '%' ? parentDim / 100 : 1;
+  const number = Number(match[1]);
+  if (!Number.isFinite(number) || !Number.isFinite(factor) || factor <= 0) return null;
+  return { original: value, unit, factor, pixels: number * factor };
+}
+
+function setDragOffset(x, y) {
+  dragState.obj.offset = [x, y].map((pixels, index) => {
+    const axis = dragState.axes[index];
+    if (Math.abs(pixels - axis.pixels) < 1e-9) return axis.original;
+    const value = Math.round(pixels / axis.factor * 1e6) / 1e6;
+    return axis.unit ? value + axis.unit : value;
+  });
 }
 
 function setOffset(obj, x, y) {

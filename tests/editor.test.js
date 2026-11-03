@@ -45,6 +45,7 @@ function setup(props) {
     renderPreview = () => { renders++; };
     renderTree = () => {};
     renderProps = () => {};
+    selectElement = path => { selectedPath = path; };
     showToast = () => {};
     globalThis.editor = {
       init(props) {
@@ -55,6 +56,12 @@ function setup(props) {
       get data() { return jsonData; },
       get history() { return uiHistory; },
       get renders() { return renders; },
+      dragOptions(options = {}) {
+        device = options.device || 'phone'; uiScale = options.scale || 1;
+        snapEnabled = !!options.snap; showHud = false;
+      },
+      addTemplate(name, obj) { jsonData[name] = obj; pushHistory(); saveDraft(); },
+      layoutBoxes, beginDrag, moveDrag, endDrag,
       nudgeSelected, restoreHistory, createOffsetEditor, createSizeEditor,
       createAnchorSelect, createNumberInput, createBoolInput, createTextInput, createArrayInput
     };
@@ -203,4 +210,102 @@ test('empty and non-finite number inputs cannot save null into the draft', () =>
     assert.equal(state.draft().alpha, 0.5);
     assert.equal(state.editor.history.length, 1);
   }
+});
+
+function drag(state, path, dx, dy, options = {}) {
+  state.editor.dragOptions(options);
+  const box = state.editor.layoutBoxes().find(box => box.path === path);
+  assert.ok(box, 'the target must be a real laid-out box');
+  state.editor.beginDrag({ clientX: 100, clientY: 100, target: {}, preventDefault() {} }, box);
+  state.editor.moveDrag({ clientX: 100 + dx, clientY: 100 + dy, altKey: false, shiftKey: false });
+  state.editor.endDrag();
+}
+
+test('root percentage dragging converts UI pixels using screen dimensions', () => {
+  const before = { type: 'panel', size: [20, 10], offset: ['50%', '10%'] };
+  const state = setup(before);
+  drag(state, 'panel', 52, 24);
+  assertSavedAndUndoable(state, before, { ...before, offset: ['60%', '20%'] });
+});
+
+test('child percentage dragging uses its own parent and preview scale', () => {
+  const before = { type: 'panel', size: [200, 80], controls: [{ child: { type: 'label', offset: ['50%', '10%'] } }] };
+  const state = setup(before);
+  drag(state, 'panel.controls[0].child', 20, 8, { scale: 2 });
+  const after = structuredClone(before); after.controls[0].child.offset = ['55%', '15%'];
+  assertSavedAndUndoable(state, before, after);
+});
+
+test('dragging preserves pixel strings and does not round an untouched percentage', () => {
+  const before = { type: 'panel', size: [20, 10], offset: ['20px', '10.25%'] };
+  const state = setup(before);
+  drag(state, 'panel', 2, 0);
+  assertSavedAndUndoable(state, before, { ...before, offset: ['22px', '10.25%'] });
+});
+
+test('percentage dragging applies snapping in pixels, then converts back', () => {
+  const before = { type: 'panel', size: [20, 10], anchor_from: 'top_left', anchor_to: 'top_left', offset: ['1%', '10%'] };
+  const state = setup(before);
+  drag(state, 'panel', -4, 0, { snap: true });
+  assertSavedAndUndoable(state, before, { ...before, offset: ['0%', '10%'] });
+  assert.equal(state.editor.layoutBoxes()[0].x, 0);
+});
+
+test('a click or zero-distance pointer move cannot snap or rewrite offsets', () => {
+  const before = { type: 'panel', size: [20, 10], anchor_from: 'top_left', offset: ['0.1%', '10.25%'] };
+  const state = setup(before);
+  drag(state, 'panel', 0, 0, { snap: true });
+  assert.deepEqual(state.data(), before);
+  assert.deepEqual(state.draft(), before);
+  assert.equal(state.editor.history.length, 1);
+});
+
+test('repeated drags use the saved value and numeric offsets still move in pixels', () => {
+  const state = setup({ type: 'panel', offset: ['50%', 10] });
+  drag(state, 'panel', -52, -2);
+  drag(state, 'panel', 26, 3);
+  assert.deepEqual(state.draft().offset, ['45%', 11]);
+  assert.equal(state.editor.history.length, 3);
+  state.editor.restoreHistory(-1);
+  assert.deepEqual(state.draft().offset, ['40%', 8]);
+});
+
+test('zero-sized percentage parents and unsupported expressions are not corrupted', () => {
+  const zero = { type: 'panel', size: [0, 80], controls: [{ child: { type: 'label', offset: ['50%', 0] } }] };
+  const state = setup(zero);
+  drag(state, 'panel.controls[0].child', 10, 0);
+  assert.deepEqual(state.data(), zero);
+  assert.deepEqual(state.draft(), zero);
+  assert.equal(state.editor.history.length, 1);
+  const expression = { type: 'panel', offset: ['50% + 2px', 0] };
+  const expressionState = setup(expression);
+  drag(expressionState, 'panel', 10, 0);
+  assert.deepEqual(expressionState.data(), expression);
+  assert.equal(expressionState.editor.history.length, 1);
+});
+
+test('dragging an inherited control writes its own raw offset, not the resolved copy', () => {
+  const before = { type: 'panel', size: [200, 80], controls: [{ 'child@test.template': { offset: ['50%', '10%'] } }] };
+  const state = setup(before);
+  state.editor.addTemplate('template', { type: 'label', size: [20, 10], offset: [0, 0] });
+  drag(state, 'panel.controls[0].child@test.template', 10, 4);
+  assert.deepEqual(state.draft().controls[0]['child@test.template'].offset, ['55%', '15%']);
+  assert.deepEqual(JSON.parse(JSON.stringify(state.editor.data.template.offset)), [0, 0]);
+  state.editor.restoreHistory(-1);
+  assert.deepEqual(state.draft(), before);
+});
+
+test('a drag returned to its start leaves no extra undo step or changed draft', () => {
+  const before = { type: 'panel', size: [20, 10], offset: ['50%', '10%'] };
+  const state = setup(before);
+  state.editor.dragOptions();
+  const box = state.editor.layoutBoxes()[0];
+  state.editor.beginDrag({ clientX: 100, clientY: 100, target: { setPointerCapture() { throw new Error('not captured'); } }, preventDefault() {} }, box);
+  state.editor.moveDrag({ clientX: 152, clientY: 124 });
+  state.editor.moveDrag({ clientX: 100, clientY: 100 });
+  state.editor.endDrag();
+  state.editor.endDrag();
+  assert.deepEqual(state.data(), before);
+  assert.deepEqual(state.draft(), before);
+  assert.equal(state.editor.history.length, 1);
 });
